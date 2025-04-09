@@ -1,7 +1,5 @@
+const app = require('./app');
 
-/**
- * Module dependencies.
- */
-var app = require('./app.js');
-
-app.startServer();
+exports.handler = async (event, context) => {
+  return app.startServer(event);
+};

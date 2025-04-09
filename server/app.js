@@ -1,5 +1,4 @@
 const express = require('express');
-const http = require('http');
 const path = require('path');
 const bodyParser = require('body-parser');
 const methodOverride = require('method-override');
@@ -9,7 +8,6 @@ const app = express();
 
 // AWS Configuration
 AWS.config.update({ region: 'us-east-1' });
-
 const cloudwatchlogs = new AWS.CloudWatchLogs();
 
 const logGroupName = 'FinserveBankingActions';
@@ -57,45 +55,41 @@ function logToCloudWatch(message) {
 }
 
 // Express Setup
-exports.startServer = function () {
-  app.set('port', process.env.PORT || 3000);
-  app.engine('.html', require('ejs').__express);
-  app.set('views', path.join(__dirname, '../public/views'));
-  app.set('view engine', 'html');
-  app.use(bodyParser.urlencoded({ extended: true }));
-  app.use(bodyParser.json());
-  app.use(methodOverride('_method'));
-  app.use(express.static(path.join(__dirname, '../public')));
+app.set('port', process.env.PORT || 3000);
+app.engine('.html', require('ejs').__express);
+app.set('views', path.join(__dirname, '../public/views'));
+app.set('view engine', 'html');
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.use(methodOverride('_method'));
+app.use(express.static(path.join(__dirname, '../public')));
 
-  // Frontend Route
-  app.get('/bank', function (req, res) {
-    res.render('index', {});
-  });
+// Frontend Route
+app.get('/bank', function (req, res) {
+  res.render('index', {});
+});
 
-  // API Route
-  app.post('/api/deposit', function (req, res) {
-    const { accountId, amount } = req.body;
+// API Route
+app.post('/api/deposit', function (req, res) {
+  const { accountId, amount } = req.body;
 
-    console.log('📥 Received Deposit Request:', req.body);
+  console.log('📥 Received Deposit Request:', req.body);
 
-    if (!accountId || !amount) {
-      console.warn('⚠️ Missing accountId or amount in request body');
-      return res.status(400).json({ status: 'error', message: 'Invalid input' });
-    }
+  if (!accountId || !amount) {
+    console.warn('⚠️ Missing accountId or amount in request body');
+    return res.status(400).json({ status: 'error', message: 'Invalid input' });
+  }
 
-    const logMessage = `Deposit | AccountID: ${accountId}, Amount: ${amount}`;
-    logToCloudWatch(logMessage);
+  const logMessage = `Deposit | AccountID: ${accountId}, Amount: ${amount}`;
+  logToCloudWatch(logMessage);
 
-    res.json({ status: 'success', message: 'Deposit successful' });
-  });
+  res.json({ status: 'success', message: 'Deposit successful' });
+});
 
-  // Fallback Route
-  app.use((req, res) => {
-    res.status(404).send('Page not found');
-  });
+// Fallback Route
+app.use((req, res) => {
+  res.status(404).send('Page not found');
+});
 
-  // Start Server
-  http.createServer(app).listen(app.get('port'), function () {
-    console.log('🚀 Server running on port ' + app.get('port'));
-  });
-};
+// ✅ Instead of starting a server here, we export the app
+module.exports = app;

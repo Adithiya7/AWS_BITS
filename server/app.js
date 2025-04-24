@@ -2,56 +2,67 @@ const express = require('express');
 const path = require('path');
 const bodyParser = require('body-parser');
 const methodOverride = require('method-override');
-const AWS = require('aws-sdk');
+
+const { CloudWatchLogsClient, DescribeLogStreamsCommand, CreateLogGroupCommand, CreateLogStreamCommand, PutLogEventsCommand } = require('@aws-sdk/client-cloudwatch-logs');
 
 const app = express();
 
 // AWS Configuration
-AWS.config.update({ region: 'us-east-1' });
-const cloudwatchlogs = new AWS.CloudWatchLogs();
+const cloudwatchlogs = new CloudWatchLogsClient({ region: 'us-east-1' });
 
 const logGroupName = 'FinserveBankingActions';
 const logStreamName = 'DepositActivity';
 
 // Ensure log group and stream exist
-function ensureLogStream(callback) {
-  cloudwatchlogs.describeLogStreams({ logGroupName }, function (err, data) {
-    if (err || !data.logStreams.find(s => s.logStreamName === logStreamName)) {
-      // Create log group if not found
-      cloudwatchlogs.createLogGroup({ logGroupName }, () => {
-        cloudwatchlogs.createLogStream({ logGroupName, logStreamName }, callback);
-      });
-    } else {
-      callback(null, data.logStreams.find(s => s.logStreamName === logStreamName));
+async function ensureLogStream() {
+  try {
+    const describeCmd = new DescribeLogStreamsCommand({ logGroupName });
+    const data = await cloudwatchlogs.send(describeCmd);
+    const logStream = data.logStreams?.find(s => s.logStreamName === logStreamName);
+
+    if (!logStream) {
+      try {
+        await cloudwatchlogs.send(new CreateLogGroupCommand({ logGroupName }));
+      } catch (e) {
+        if (e.name !== 'ResourceAlreadyExistsException') throw e;
+      }
+
+      await cloudwatchlogs.send(new CreateLogStreamCommand({ logGroupName, logStreamName }));
+      return { uploadSequenceToken: null };
     }
-  });
+
+    return logStream;
+  } catch (err) {
+    console.error('Error ensuring log stream:', err);
+    return null;
+  }
 }
 
 // Function to log to CloudWatch
-function logToCloudWatch(message) {
-  ensureLogStream((err, logStream) => {
-    if (err) {
-      console.error('Failed to prepare log stream:', err);
-      return;
+async function logToCloudWatch(message) {
+  const logStream = await ensureLogStream();
+  if (!logStream) return;
+
+  const logEvents = [
+    {
+      message: message,
+      timestamp: Date.now()
     }
+  ];
 
-    const params = {
-      logGroupName,
-      logStreamName,
-      logEvents: [
-        {
-          message: message,
-          timestamp: Date.now(),
-        },
-      ],
-      sequenceToken: logStream?.uploadSequenceToken
-    };
+  const params = {
+    logGroupName,
+    logStreamName,
+    logEvents,
+    sequenceToken: logStream.uploadSequenceToken
+  };
 
-    cloudwatchlogs.putLogEvents(params, function (err, data) {
-      if (err) console.error('CloudWatch logging failed:', err);
-      else console.log('✅ Logged to CloudWatch:', message);
-    });
-  });
+  try {
+    await cloudwatchlogs.send(new PutLogEventsCommand(params));
+    console.log('✅ Logged to CloudWatch:', message);
+  } catch (err) {
+    console.error('CloudWatch logging failed:', err);
+  }
 }
 
 // Express Setup
@@ -70,7 +81,7 @@ app.get('/bank', function (req, res) {
 });
 
 // API Route
-app.post('/api/deposit', function (req, res) {
+app.post('/api/deposit', async function (req, res) {
   const { accountId, amount } = req.body;
 
   console.log('📥 Received Deposit Request:', req.body);
@@ -81,15 +92,48 @@ app.post('/api/deposit', function (req, res) {
   }
 
   const logMessage = `Deposit | AccountID: ${accountId}, Amount: ${amount}`;
-  logToCloudWatch(logMessage);
+  await logToCloudWatch(logMessage);
+
+  // ✅ Lambda Integration
+  const AWS = require('aws-sdk');
+  AWS.config.update({ region: 'us-east-1' });
+
+  const lambda = new AWS.Lambda();
+
+  const payload = {
+    user: 'demo-user', // Optional: replace with actual user
+    accountId,
+    amount,
+    timestamp: new Date().toISOString()
+  };
+
+  const params = {
+    FunctionName: 'HighValueDepositHandler', // Replace with your actual Lambda function name
+    InvocationType: 'Event', // async
+    Payload: JSON.stringify(payload)
+  };
+
+  lambda.invoke(params, function (err, data) {
+    if (err) {
+      console.error('❌ Lambda invocation error:', err);
+    } else {
+      console.log('✅ Lambda invoked successfully');
+    }
+  });
 
   res.json({ status: 'success', message: 'Deposit successful' });
 });
+
 
 // Fallback Route
 app.use((req, res) => {
   res.status(404).send('Page not found');
 });
 
-// ✅ Instead of starting a server here, we export the app
+const port = app.get('port');
+app.listen(port, () => {
+  console.log(`🚀 Server started on port ${port}`);
+});
+
 module.exports = app;
+
